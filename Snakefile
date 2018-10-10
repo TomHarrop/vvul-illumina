@@ -7,7 +7,7 @@ import pathlib2
 #############
 
 
-def readset_wildard_resolver(wildcards):
+def readset_wildcard_resolver(wildcards):
     if wildcards.read_set == 'norm':
         return({'fq': 'output/030_norm/vvul.fq.gz'})
     elif wildcards.read_set == 'trim-decon':
@@ -16,13 +16,14 @@ def readset_wildard_resolver(wildcards):
         raise ValueError('unknown read_set')
 
 
-def write_config_file(fastq, threads, config_string, config_file):
+def write_config_file(fastq, k, diplo_mode, dmin, threads, config_string, config_file):
     '''
     Accept fastq file, threads config string and output location and write
     config
     '''
+    print(fastq, threads, config_string, config_file)
     my_fastq = str(pathlib2.Path(fastq).resolve())
-    my_conf = config_string.format(my_fastq, threads)
+    my_conf = config_string.format(my_fastq, k, diplo_mode, dmin, threads)
     with open(config_file, 'wt') as f:
         f.write(my_conf)
     return True
@@ -75,7 +76,7 @@ rule target:
 # 04 meraculous
 rule meraculous:
     input:
-        unpack(readset_wildard_resolver),
+        unpack(readset_wildcard_resolver),
         config = ('output/040_meraculous/'
                   '{read_set}_k{k}_diplo{diplo}/config.txt')
     output:
@@ -99,17 +100,21 @@ rule meraculous:
 
 rule meraculous_config:
     input:
-        unpack(readset_wildard_resolver)
+        unpack(readset_wildcard_resolver)
     output:
         config = ('output/040_meraculous/'
                   '{read_set}_k{k}_diplo{diplo}/config.txt'),
     threads:
         1
     params:
-        threads = meraculous_threads
+        threads = meraculous_threads,
+        dmin = '0'
     run:
         write_config_file(
             input.fq,
+            wildcards.k,
+      	    wildcards.diplo,
+      	    params.dmin,
             params.threads,
             meraculous_config_string,
             output.config)
