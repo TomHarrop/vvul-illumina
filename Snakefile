@@ -1,10 +1,25 @@
 #!/usr/bin/env python3
 
+import os
 import pathlib2
 
 #############
 # FUNCTIONS #
 #############
+
+
+def find_completed_assemblies(wildcards):
+    my_files = list((dirpath, filenames)
+                    for (dirpath, dirnames, filenames)
+                    in os.walk('output/040_meraculous'))
+    my_fasta_files = []
+    for dirpath, filenames in my_files:
+        for filename in filenames:
+            if ('final.scaffolds.fa' in filename 
+                    and 'meraculous_final_results' in dirpath):
+                my_path = os.path.join(dirpath, filename)
+                my_fasta_files.append(my_path)
+    return(my_fasta_files)
 
 
 def readset_wildcard_resolver(wildcards):
@@ -15,6 +30,9 @@ def readset_wildcard_resolver(wildcards):
     else:
         raise ValueError('unknown read_set')
 
+
+def resolve_path(x):
+    return str(pathlib2.Path(x).resolve())
 
 def write_config_file(fastq, k, diplo_mode, dmin, threads, config_string, config_file):
     '''
@@ -47,6 +65,7 @@ kraken_container = 'shub://TomHarrop/singularity-containers:kraken_2.0.7beta'
 bbduk_container = 'shub://TomHarrop/singularity-containers:bbmap_38.00'
 mer_container = 'shub://TomHarrop/singularity-containers:meraculous_2.2.6'
 r_container = 'shub://TomHarrop/singularity-containers:r_3.5.1'
+busco_container = 'shub://TomHarrop/singularity-containers:busco_3.0.2'
 
 
 ########
@@ -64,14 +83,95 @@ with open(meraculous_config_file, 'rt') as f:
 
 rule target:
     input:
-        expand(('output/040_meraculous/{read_set}_k{k}_diplo{diplo}/'
+        # expand(('output/040_meraculous/{read_set}_k{k}_diplo{diplo}/'
+        #         'meraculous_final_results/final.scaffolds.fa'),
+        #        read_set=['norm', 'trim-decon'],
+        #        k=['31', '71', '101'],
+        #        diplo=['0', '1']),
+        expand(('output/040_meraculous/{read_set}_k65_diplo{diplo}/'
                 'meraculous_final_results/final.scaffolds.fa'),
                read_set=['norm', 'trim-decon'],
-               k=['31', '71', '101'],
                diplo=['0', '1']),
         'output/030_norm/kmer_plot.pdf',
         'output/011_kraken/kraken_report.txt',
         'output/010_trim-decon/vvul.fq.gz'
+
+# 06 run busco on completed assemblies
+rule busco_jobs:
+    input:
+        expand(('output/060_busco/run_{assembly}/'
+                'full_table_{assembly}.tsv'),
+               assembly=[pathlib2.Path(x).parts[2]
+                         for x in
+                         find_completed_assemblies('')])
+
+rule busco:
+    input:
+        fasta = ('output/040_meraculous/{read_set}_k{k}_diplo{diplo}/'
+                 'meraculous_final_results/final.scaffolds.fa'),
+        lineage = 'data/lineages/hymenoptera_odb9'
+    output:
+        ('output/060_busco/run_{read_set}_k{k}_diplo{diplo}/'
+         'full_table_{read_set}_k{k}_diplo{diplo}.tsv')
+    log:
+        str(pathlib2.Path(('output/logs/060_busco/'
+                           'busco_{read_set}_k{k}_diplo{diplo}.log')).resolve())
+    params:
+        wd = 'output/060_busco',
+        name = '{read_set}_k{k}_diplo{diplo}',
+        fasta = lambda wildcards, input: resolve_path(input.fasta),
+        lineage = lambda wildcards, input: resolve_path(input.lineage)
+    threads:
+        20
+    singularity:
+        busco_container
+    shell:
+        'cd {params.wd} || exit 1 ; '
+        'run_BUSCO.py '
+        '--force '
+        '--in {params.fasta} '
+        '--out {params.name} '
+        '--lineage {params.lineage} '
+        '--cpu {threads} '
+        '--species honeybee1 '
+        '--mode genome '
+        '&> {log}'
+
+
+# 05 run bbmap stats on completed assemblies
+rule stats_plot:
+    input:
+        stats = 'output/050_assembly-stats/stats.txt'
+    output:
+        plot = 'output/050_assembly-stats/assembly_stats.pdf'
+    log:
+        log = 'output/logs/050_assembly-stats/plot.log'
+    singularity:
+        r_container
+    script:
+        'src/plot_assembly_stats.R'
+
+rule bbmap_stats:
+    input:
+        fa = find_completed_assemblies
+    output:
+        stats = 'output/050_assembly-stats/stats.txt'
+    params:
+        input_files = lambda wildcards, input: ','.join(input.fa)
+    log:
+        'output/logs/050_assembly-stats/stats.log'
+    threads:
+        1
+    singularity:
+        bbduk_container
+    shell:
+        'statswrapper.sh '
+        'in={params.input_files} '
+        'minscaf=1000 '
+        'format=3 '
+        '> {output.stats} '
+        '2> {log}'
+
 
 # 04 meraculous
 rule meraculous:
@@ -113,8 +213,8 @@ rule meraculous_config:
         write_config_file(
             input.fq,
             wildcards.k,
-      	    wildcards.diplo,
-      	    params.dmin,
+            wildcards.diplo,
+            params.dmin,
             params.threads,
             meraculous_config_string,
             output.config)
@@ -165,7 +265,7 @@ rule bbnorm:
         'target={params.target} '
         'min=5 '
         'peaks={output.peaks} '
-        '2> {log.norm} '  
+        '2> {log.norm} '
 
 
 # 02 attempt to merge overlapping reads
@@ -309,4 +409,3 @@ rule join_reads:
         'cat {input.r1} > {output.r1} & '
         'cat {input.r2} > {output.r2} & '
         'wait'
-
